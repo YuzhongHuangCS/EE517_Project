@@ -1,21 +1,25 @@
 import datetime
 import functools
 import os
+import pickle
 import re
 import time
-import pickle
-import os.path
-from googleapiclient.discovery import build
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-from googleapiclient.http import MediaFileUpload
+from concurrent.futures import ThreadPoolExecutor
+
+
 import numpy as np
+import os.path
 import requests
-import pdb
+from google.auth.transport.requests import Request
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
 BASE_URL = 'https://56cf3370d8dd3.streamlock.net:1935/live/usc-hecuba.stream/'
 DRIVE_SERVICE = None
 PATH_ID_DB = {}
+EXECUTOR = ThreadPoolExecutor(max_workers=4)
+
 
 def get_playlist():
     req = requests.get(BASE_URL + 'playlist.m3u8')
@@ -56,8 +60,7 @@ def download_media(filename):
         filename_drive = now.strftime('%Y_%m_%d_%H_%M_%S_') + filename.replace('.ts', '.mpeg')
 
         parent = get_parent_by_path(path)
-        upload_file(filename_temp, filename_drive, parent)
-        print('Uploaded', filename_temp)
+        EXECUTOR.submit(upload_file, filename_temp, filename_drive, parent)
     else:
         raise RuntimeError('Unexpected status', req.status_code)
 
@@ -76,9 +79,7 @@ def get_parent_by_path(current_path, parent_path=None):
         parent_id = PATH_ID_DB[parent_path]
         query += " and '{}' in parents".format(parent_id)
 
-    response = DRIVE_SERVICE.files().list(q=query,
-                                          spaces='drive',
-                                          fields='files(id, name)').execute()
+    response = DRIVE_SERVICE.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
     files = response.get('files', [])
     if len(files) <= 1:
         if len(files) == 0:
@@ -101,23 +102,23 @@ def get_parent_by_path(current_path, parent_path=None):
             processed_path = parent_path + '/' + first_child
 
         PATH_ID_DB[processed_path] = first_child_id
-        print(PATH_ID_DB)
         if len(remaining) > 0:
             return get_parent_by_path('/'.join(remaining), processed_path)
         else:
             return first_child_id
     else:
-        pdb.set_trace()
-        print('Unexpected')
+        print('More than one file matched, unexpected', files)
+
 
 def upload_file(filename_temp, filename_drive, parent):
-    file_metadata = {'name': filename_drive, 'parents': [parent]}
-    media = MediaFileUpload(filename_temp,
-                            mimetype='video/mp2t')
-    file = DRIVE_SERVICE.files().create(body=file_metadata,
-                                        media_body=media,
-                                        fields='id').execute()
-    print(filename_temp, 'File ID: %s' % file.get('id'))
+    file_metadata = {
+        'name': filename_drive,
+        'parents': [parent]
+    }
+    media = MediaFileUpload(filename_temp, mimetype='video/mp2t')
+    file = DRIVE_SERVICE.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    print('Uploaded: {} -> File ID: {}'.format(filename_temp, file.get('id')))
+    os.remove(filename_temp)
 
 
 def initialize_google_api():
