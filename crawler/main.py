@@ -6,7 +6,6 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-
 import numpy as np
 import os.path
 import requests
@@ -18,7 +17,7 @@ from googleapiclient.http import MediaFileUpload
 BASE_URL = 'https://56cf3370d8dd3.streamlock.net:1935/live/usc-hecuba.stream/'
 DRIVE_SERVICE = None
 PATH_ID_DB = {}
-EXECUTOR = ThreadPoolExecutor(max_workers=4)
+EXECUTOR = ThreadPoolExecutor(max_workers=1)
 
 
 def get_playlist():
@@ -67,17 +66,31 @@ def download_media(filename):
 
 def get_parent_by_path(current_path, parent_path=None):
     if current_path in PATH_ID_DB:
+        print('Fully cached', current_path)
         return PATH_ID_DB[current_path]
 
     path_parts = current_path.split('/')
     first_child = path_parts[0]
     remaining = path_parts[1:]
-    parent_id = None
+
+    if parent_path is None:
+        processed_path = first_child
+    else:
+        processed_path = parent_path + '/' + first_child
+
+    if processed_path in PATH_ID_DB:
+        if len(remaining) > 0:
+            print('Partially cached', processed_path)
+            return get_parent_by_path('/'.join(remaining), processed_path)
+        else:
+            print('This should never happened, logic error')
 
     query = "mimeType='application/vnd.google-apps.folder' and name='{}'".format(first_child)
     if parent_path is not None:
         parent_id = PATH_ID_DB[parent_path]
         query += " and '{}' in parents".format(parent_id)
+    else:
+        parent_id = None
 
     response = DRIVE_SERVICE.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
     files = response.get('files', [])
@@ -95,11 +108,6 @@ def get_parent_by_path(current_path, parent_path=None):
         else:
             first_child_id = files[0]['id']
             print('Found an parent', first_child, first_child_id)
-
-        if parent_path is None:
-            processed_path = first_child
-        else:
-            processed_path = parent_path + '/' + first_child
 
         PATH_ID_DB[processed_path] = first_child_id
         if len(remaining) > 0:
@@ -174,8 +182,8 @@ if __name__ == "__main__":
             seconds = np.random.randint(0, 60)
             while True:
                 try:
-                    time.sleep(seconds)
                     print('Sleep for {} seconds'.format(seconds))
+                    time.sleep(seconds)
                     playlist = get_playlist()
                     print(playlist)
                     break
