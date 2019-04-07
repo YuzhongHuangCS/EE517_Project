@@ -3,12 +3,19 @@ import functools
 import os
 import re
 import time
-
+import pickle
+import os.path
+from googleapiclient.discovery import build
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from googleapiclient.http import MediaFileUpload
 import numpy as np
 import requests
+import pdb
 
 BASE_URL = 'https://56cf3370d8dd3.streamlock.net:1935/live/usc-hecuba.stream/'
-
+DRIVE_SERVICE = None
+PATH_ID_DB = {}
 
 def get_playlist():
     req = requests.get(BASE_URL + 'playlist.m3u8')
@@ -29,8 +36,7 @@ def get_chunklist(playlist):
         else:
             m = re.search(r'#EXTINF:([0-9]*\.?[0-9]+)', line)
             if m:
-                time = m.groups()[0]
-                timelist.append(float(time))
+                timelist.append(float(m.groups()[0]))
 
     return chunklist, timelist
 
@@ -40,17 +46,107 @@ def download_media(filename):
     req = requests.get(BASE_URL + filename)
     if req.status_code == 200:
         now = datetime.datetime.now()
-        folder = now.strftime('data/%Y/%m/%d/%H/%M/')
-        os.makedirs(folder, exist_ok=True)
-        filename_mpeg = folder + now.strftime('%Y_%m_%d_%H_%M_%S_') + filename.replace('.ts', '.mpeg')
-        with open(filename_mpeg, 'wb') as f:
+        filename_temp = 'temp/' + filename.replace('.ts', '.mpeg')
+
+        with open(filename_temp, 'wb') as f:
             f.write(req.content)
-        print('Done', filename_mpeg)
+        print('Downloaded', filename_temp)
+
+        path = now.strftime('Hecuba_Camera/%Y/%m/%d/%H/%M')
+        filename_drive = now.strftime('%Y_%m_%d_%H_%M_%S_') + filename.replace('.ts', '.mpeg')
+
+        parent = get_parent_by_path(path)
+        upload_file(filename_temp, filename_drive, parent)
+        print('Uploaded', filename_temp)
     else:
         raise RuntimeError('Unexpected status', req.status_code)
 
 
+def get_parent_by_path(current_path, parent_path=None):
+    if current_path in PATH_ID_DB:
+        return PATH_ID_DB[current_path]
+
+    path_parts = current_path.split('/')
+    first_child = path_parts[0]
+    remaining = path_parts[1:]
+    parent_id = None
+
+    query = "mimeType='application/vnd.google-apps.folder' and name='{}'".format(first_child)
+    if parent_path is not None:
+        parent_id = PATH_ID_DB[parent_path]
+        query += " and '{}' in parents".format(parent_id)
+
+    response = DRIVE_SERVICE.files().list(q=query,
+                                          spaces='drive',
+                                          fields='files(id, name)').execute()
+    files = response.get('files', [])
+    if len(files) <= 1:
+        if len(files) == 0:
+            file_metadata = {
+                'name': first_child,
+                'mimeType': 'application/vnd.google-apps.folder',
+            }
+            if parent_id is not None:
+                file_metadata['parents'] = [parent_id]
+
+            first_child_id = DRIVE_SERVICE.files().create(body=file_metadata, fields='id').execute().get('id')
+            print('Create a new folder', first_child, first_child_id)
+        else:
+            first_child_id = files[0]['id']
+            print('Found an parent', first_child, first_child_id)
+
+        if parent_path is None:
+            processed_path = first_child
+        else:
+            processed_path = parent_path + '/' + first_child
+
+        PATH_ID_DB[processed_path] = first_child_id
+        print(PATH_ID_DB)
+        if len(remaining) > 0:
+            return get_parent_by_path('/'.join(remaining), processed_path)
+        else:
+            return first_child_id
+    else:
+        pdb.set_trace()
+        print('Unexpected')
+
+def upload_file(filename_temp, filename_drive, parent):
+    file_metadata = {'name': filename_drive, 'parents': [parent]}
+    media = MediaFileUpload(filename_temp,
+                            mimetype='video/mp2t')
+    file = DRIVE_SERVICE.files().create(body=file_metadata,
+                                        media_body=media,
+                                        fields='id').execute()
+    print(filename_temp, 'File ID: %s' % file.get('id'))
+
+
+def initialize_google_api():
+    global DRIVE_SERVICE
+
+    creds = None
+    # The file token.pickle stores the user's access and refresh tokens, and is
+    # created automatically when the authorization flow completes for the first
+    # time.
+    if os.path.exists('token.pickle'):
+        with open('token.pickle', 'rb') as token:
+            creds = pickle.load(token)
+    # If there are no (valid) credentials available, let the user log in.
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', ['https://www.googleapis.com/auth/drive'])
+            creds = flow.run_local_server()
+        # Save the credentials for the next run
+        with open('token.pickle', 'wb') as token:
+            pickle.dump(creds, token)
+
+    DRIVE_SERVICE = build('drive', 'v3', credentials=creds)
+
+
 if __name__ == "__main__":
+    initialize_google_api()
+
     playlist = get_playlist()
     print('Play list: {}'.format(playlist))
 
@@ -73,5 +169,15 @@ if __name__ == "__main__":
         except Exception as e:
             print(e)
 
-            playlist = get_playlist()
-            print(playlist)
+            print('Server refused connection')
+            seconds = np.random.randint(0, 60)
+            while True:
+                try:
+                    time.sleep(seconds)
+                    print('Sleep for {} seconds'.format(seconds))
+                    playlist = get_playlist()
+                    print(playlist)
+                    break
+                except Exception as e2:
+                    print(e2)
+                    seconds += np.random.randint(0, 60)
