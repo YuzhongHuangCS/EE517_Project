@@ -15,7 +15,7 @@ df_onehot = pd.get_dummies(df, columns=['Entering Point (8 Direction)', 'Leaving
 X = df_onehot.values[:, 1:]
 Y = df_onehot.values[:, 0].astype(int)
 
-X_train, X_test, Y_train, Y_test = sklearn.model_selection.train_test_split(X, Y, test_size=0.1)
+X_train, X_test, Y_train, Y_test = sklearn.model_selection.train_test_split(X, Y, test_size=0.5)
 #clf = sklearn.svm.SVC()
 #clf = sklearn.svm.LinearSVC()
 #clf = sklearn.ensemble.GradientBoostingClassifier()
@@ -24,8 +24,8 @@ clf.fit(X_train, Y_train)
 
 train_number_of_one = sum(Y_train == 1)
 test_number_of_one = sum(Y_test == 1)
-print('train one ratio', train_number_of_one/len(Y_train))
-print('test one ratio', test_number_of_one/len(Y_test))
+print('train zero ratio', 1-train_number_of_one/len(Y_train))
+print('test zero ratio', 1-test_number_of_one/len(Y_test))
 print('train accuracy', clf.score(X_train, Y_train))
 print('test accuracy', clf.score(X_test, Y_test))
 print('OK')
